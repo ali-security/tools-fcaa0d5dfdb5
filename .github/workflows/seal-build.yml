@@ -1,0 +1,119 @@
+name: seal-build
+
+# golang.org/x/tools has no GitHub Actions CI of its own (it is tested on the
+# Go build dashboard). This workflow builds the module zip served by
+# proxy.golang.org and runs the module's full `go test ./...` suite on
+# Linux and Windows with Go 1.12, the toolchain contemporary with this
+# June 2019 snapshot (go.mod declares go 1.11).
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Go packages to test (default: ./...)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  MODULE_PATH: golang.org/x/tools
+  MODULE_VERSION: v0.0.0-20190628153133-6cdbf07be9d0
+  GOPROXY: https://proxy.golang.org
+  GO111MODULE: "on"
+
+jobs:
+  module-zip:
+    name: module zip
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: false
+      - name: Build x/mod zip helper
+        run: |
+          set -eux
+          HELPER=$(mktemp -d)
+          cp .github/create_mod.go "$HELPER/main.go"
+          cd "$HELPER"
+          go mod init example.com/createmod
+          go get golang.org/x/mod@v0.24.0
+          go build -o "$RUNNER_TEMP/create_mod" .
+      - name: Create module zip
+        run: |
+          set -eux
+          STAGE="$RUNNER_TEMP/zipsrc"
+          mkdir -p "$STAGE" "$RUNNER_TEMP/out"
+          # The seal workflow and helper under .github must not ship in the zip.
+          tar -c --exclude=.git --exclude=.github -C "$GITHUB_WORKSPACE" . | tar -x -C "$STAGE"
+          test ! -e "$STAGE/.github"
+          test -f "$STAGE/go.mod"
+          test -f "$STAGE/.gitignore"
+          test -f "$STAGE/.gitattributes"
+          "$RUNNER_TEMP/create_mod" "$MODULE_PATH" "$MODULE_VERSION" "$STAGE" "$RUNNER_TEMP/out/$MODULE_VERSION.zip"
+          unzip -Z1 "$RUNNER_TEMP/out/$MODULE_VERSION.zip" | wc -l
+          sha256sum "$RUNNER_TEMP/out/$MODULE_VERSION.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: module-zip
+          path: ${{ runner.temp }}/out/v0.0.0-20190628153133-6cdbf07be9d0.zip
+          if-no-files-found: error
+
+  test:
+    name: test (${{ matrix.os }}, go ${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        go: ["1.12"]
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Go 1.12's prebuilt runtime/cgo objects reference __iob_func, which the
+      # runner's current mingw-w64 gcc no longer provides, so any cgo link
+      # fails on Windows. Windows Go programs do not need cgo; build pure Go.
+      CGO_ENABLED: ${{ matrix.os == 'windows-latest' && '0' || '1' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
+      - name: Go env
+        run: |
+          set -eux
+          go version
+          go env
+      - name: Build
+        run: |
+          set -eux
+          go build ./...
+      - name: Test
+        run: |
+          set -eux -o pipefail
+          go test -v ${{ inputs.test-filter || './...' }} 2>&1 | tee "$RUNNER_TEMP/go-test.log"
+      - name: Test summary
+        if: always()
+        run: |
+          set -eu
+          LOG="$RUNNER_TEMP/go-test.log"
+          awk '
+            /^ok /          { pok++ }
+            /^FAIL\t/       { pfail++ }
+            /--- PASS/      { pass++ }
+            /--- FAIL/      { fail++ }
+            /--- SKIP/      { skip++ }
+            END {
+              printf "packages ok:   %d\n", pok
+              printf "packages FAIL: %d\n", pfail
+              printf "tests passed:  %d\n", pass
+              printf "tests failed:  %d\n", fail
+              printf "tests skipped: %d\n", skip
+            }' "$LOG"

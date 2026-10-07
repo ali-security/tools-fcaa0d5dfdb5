@@ -27,6 +27,10 @@ func TestStaticIsUpToDate(t *testing.T) {
 		t.Errorf("error while generating static.go: %v\n", err)
 	}
 
+	// gen.go stamps the current year into the generated copyright line, so
+	// ignore that one line; everything else must match byte for byte.
+	oldBuf = stripCopyrightLine(oldBuf)
+	newBuf = stripCopyrightLine(newBuf)
 	if bytes.Compare(oldBuf, newBuf) != 0 {
 		t.Error(`static.go is stale.  Run:
   $ go generate golang.org/x/tools/godoc/static
@@ -34,6 +38,17 @@ func TestStaticIsUpToDate(t *testing.T) {
 to see the differences.`)
 
 	}
+}
+
+// stripCopyrightLine drops a leading "// Copyright <year> ..." line.
+func stripCopyrightLine(b []byte) []byte {
+	if !bytes.HasPrefix(b, []byte("// Copyright ")) {
+		return b
+	}
+	if i := bytes.IndexByte(b, '\n'); i >= 0 {
+		return b[i+1:]
+	}
+	return nil
 }
 
 // TestAppendQuote ensures that AppendQuote produces a valid literal.

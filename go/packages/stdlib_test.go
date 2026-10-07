@@ -62,6 +62,12 @@ func TestCgoOption(t *testing.T) {
 		t.Skip("skipping in short mode; uses tons of memory (https://golang.org/issue/14113)")
 	}
 
+	// The net and os/user packages do not use cgo on Windows, so the
+	// cgo-specific objects this test looks up do not exist there.
+	if runtime.GOOS == "windows" {
+		t.Skip("net and os/user have no cgo implementation on windows")
+	}
+
 	// TODO(adonovan): see if we can get away without these old
 	// go/loader hacks now that we use the go list command.
 	//

@@ -82,7 +82,8 @@ func waitForSearchReady(t *testing.T, addr string) {
 	waitForServer(t,
 		fmt.Sprintf("http://%v/search?q=FALLTHROUGH", addr),
 		"The list of tokens.",
-		2*time.Minute,
+		// Indexing all of GOROOT takes ~2m on shared CI runners; allow headroom.
+		5*time.Minute,
 		false)
 }
 
